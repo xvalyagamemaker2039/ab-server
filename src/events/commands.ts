@@ -6,6 +6,8 @@ export const COMMAND_ELECTIONS = 'COMMAND_ELECTIONS';
 
 export const COMMAND_FLAG = 'COMMAND_FLAG';
 
+export const COMMAND_LAGS = 'COMMAND_LAGS';
+
 export const COMMAND_MATCH = 'COMMAND_MATCH';
 
 export const COMMAND_PLAYERS = 'COMMAND_PLAYERS';

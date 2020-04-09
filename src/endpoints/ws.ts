@@ -1,567 +1,397 @@
-import fs from 'fs';
-import { join as joinPath } from 'path';
-import querystring from 'querystring';
-import util from 'util';
-import { GAME_TYPES } from '@airbattle/protocol';
-import uws, { DISABLED } from 'uWebSockets.js';
+import { Worker } from 'worker_threads';
+import { marshalServerMessage, ProtocolPacket } from '@airbattle/protocol';
+import EventEmitter from 'eventemitter3';
 import {
-  CHAT_SUPERUSER_MUTE_TIME_MS,
-  CONNECTIONS_IDLE_TIMEOUT_SEC,
-  CONNECTIONS_MAX_PAYLOAD_BYTES,
   CONNECTIONS_PACKET_LOGIN_TIMEOUT_MS,
   CONNECTIONS_PLAYERS_TO_CONNECTIONS_MULTIPLIER,
   CONNECTIONS_STATUS,
-  CONNECTIONS_SUPERUSER_BAN_MS,
-  CONNECTIONS_WEBSOCKETS_COMPRESSOR,
-} from '@/constants';
-import GameServer from '@/core/server';
+} from '../constants';
+import GameServerBootstrap from '../core/bootstrap';
 import {
-  CHAT_MUTE_BY_IP,
-  CHAT_UNMUTE_BY_IP,
-  CONNECTIONS_BAN_IP,
-  CONNECTIONS_BREAK,
-  CONNECTIONS_CLOSED,
-  CONNECTIONS_PACKET_RECEIVED,
+  CONNECTIONS_SEND_PACKETS,
   CONNECTIONS_UNBAN_IP,
-  CTF_REMOVE_PLAYER_FROM_LEADER,
   ERRORS_PACKET_FLOODING_DETECTED,
-  PLAYERS_KICK,
+  PLAYERS_CREATED,
+  PLAYERS_REMOVED,
   RESPONSE_PLAYER_BAN,
   TIMEOUT_LOGIN,
-} from '@/events';
-import Logger from '@/logger';
-import { ConnectionMeta, IPv4, PlayerConnection } from '@/types';
-
-const readFile = util.promisify(fs.readFile);
-const readDir = util.promisify(fs.readdir);
-
-const readRequest = (res: uws.HttpResponse, cb: Function, err: () => void): void => {
-  let buffer = Buffer.alloc(0);
-
-  res.onAborted(err);
-
-  res.onData((ab, isLast) => {
-    buffer = Buffer.concat([buffer, Buffer.from(ab)]);
-
-    if (isLast) {
-      try {
-        cb(buffer.toString());
-      } catch (e) {
-        res.close();
-      }
-    }
-  });
-};
+  WS_WORKER_CONNECTION_CLOSE,
+  WS_WORKER_CONNECTION_OPENED,
+  WS_WORKER_GET_PLAYER,
+  WS_WORKER_GET_PLAYERS_LIST,
+  WS_WORKER_GET_PLAYERS_LIST_RESPONSE,
+  WS_WORKER_GET_PLAYER_RESPONSE,
+  WS_WORKER_SEND_PACKETS,
+  WS_WORKER_STARTED,
+  WS_WORKER_STOP,
+  WS_WORKER_UPDATE_PLAYERS_AMOUNT,
+} from '../events';
+import Logger from '../logger';
+import { GameStorage } from '../server/storage';
+import { has } from '../support/objects';
+import {
+  AdminActionPlayer,
+  AdminPlayersListItem,
+  ConnectionId,
+  ConnectionMeta,
+  Player,
+  PlayerId,
+  WorkerConnectionMeta,
+} from '../types';
 
 export default class WsEndpoint {
-  protected uws: uws.TemplatedApp;
+  private app: GameServerBootstrap;
 
-  protected app: GameServer;
+  private log: Logger;
 
-  protected log: Logger;
+  private storage: GameStorage;
 
-  protected moderatorActions: Array<string> = [];
+  private events: EventEmitter;
+
+  private worker: Worker;
 
   constructor({ app }) {
     this.app = app;
     this.log = this.app.log;
+    this.storage = this.app.storage;
+    this.events = this.app.events;
 
-    if (app.config.tls) {
-      this.uws = uws.SSLApp({
-        key_file_name: `${app.config.certs.path}/privkey.pem`, // eslint-disable-line
-        cert_file_name: `${app.config.certs.path}/fullchain.pem`, // eslint-disable-line
-      });
-    } else {
-      this.uws = uws.App({});
+    /**
+     * Event handlers.
+     */
+    this.events.on(WS_WORKER_CONNECTION_CLOSE, this.closeConnection, this);
+    this.events.on(WS_WORKER_CONNECTION_OPENED, this.connectionOpened, this);
+
+    this.events.on(CONNECTIONS_SEND_PACKETS, this.sendPackets, this);
+
+    this.events.on(PLAYERS_CREATED, this.updatePlayersAmount, this);
+    this.events.on(PLAYERS_REMOVED, this.updatePlayersAmount, this);
+
+    this.events.on(WS_WORKER_GET_PLAYER, this.getAdminPlayerById, this);
+    this.events.on(WS_WORKER_GET_PLAYERS_LIST, this.getAdminPlayersList, this);
+  }
+
+  /**
+   * Collect the response data on `/admin/actions` POST request.
+   */
+  getAdminPlayerById(playerId: PlayerId): void {
+    let actionPlayerData: AdminActionPlayer = null;
+
+    if (this.storage.playerList.has(playerId)) {
+      const player = this.storage.playerList.get(playerId);
+
+      actionPlayerData = {
+        id: player.id.current,
+        name: player.name.current,
+        ip: player.ip.current,
+      };
     }
 
-    this.uws
-      .ws('/*', {
-        compression: this.app.config.compression ? CONNECTIONS_WEBSOCKETS_COMPRESSOR : DISABLED,
-        maxPayloadLength: CONNECTIONS_MAX_PAYLOAD_BYTES,
-        idleTimeout: CONNECTIONS_IDLE_TIMEOUT_SEC,
+    this.worker.postMessage({
+      event: WS_WORKER_GET_PLAYER_RESPONSE,
+      args: [actionPlayerData],
+    });
+  }
 
-        open: (connection: PlayerConnection, req) => {
-          const connectionId = this.app.helpers.createConnectionId();
-          const now = Date.now();
+  /**
+   * Collect the response data on `/admin/players` request.
+   */
+  getAdminPlayersList(): void {
+    const now = Date.now();
+    const list: AdminPlayersListItem[] = [];
 
-          this.app.storage.connectionList.set(connectionId, connection);
+    {
+      const playersIterator = this.storage.playerList.values();
+      let player: Player = playersIterator.next().value;
 
-          connection.meta = {
-            id: connectionId,
-            ip: WsEndpoint.decodeIPv4(connection.getRemoteAddress()),
-            isBackup: false,
-            isMain: false,
-            status: CONNECTIONS_STATUS.OPENED,
-            headers: {},
-            isBot: false,
-            player: null,
-            playerId: null,
-            teamId: null,
-            userId: null,
-            lastMessageMs: now,
-            createdAt: now,
-            lagging: false,
-            lagPackets: 0,
-
-            periodic: {
-              ping: null,
-            },
-
-            timeouts: {
-              login: null,
-              ack: null,
-              backup: null,
-              pong: null,
-              respawn: null,
-              lagging: null,
-            },
-
-            pending: {
-              login: false,
-              respawn: false,
-              spectate: false,
-            },
-
-            limits: {
-              any: 0,
-              chat: 0,
-              key: 0,
-              respawn: 0,
-              spectate: 0,
-              su: 0,
-              debug: 0,
-              spam: 0,
-            },
-          } as ConnectionMeta;
-
-          if (req.getHeader('x-forwarded-for') !== '') {
-            connection.meta.ip = req.getHeader('x-forwarded-for');
-          } else if (req.getHeader('x-real-ip') !== '') {
-            connection.meta.ip = req.getHeader('x-real-ip');
-          }
-
-          this.log.debug(
-            `Open connection id${connectionId}, ${req.getMethod()}, ${connection.meta.ip}`
-          );
-
-          /**
-           * Detect bots.
-           */
-          if (
-            this.app.config.whitelist === false ||
-            this.app.storage.ipWhiteList.has(connection.meta.ip)
-          ) {
-            connection.meta.isBot = true;
-
-            if (this.app.config.whitelist === false) {
-              this.log.debug(
-                `Connection id${connectionId} IP ${connection.meta.ip} is a bot (whitelist is disabled).`
-              );
-            } else {
-              this.log.debug(
-                `Connection id${connectionId} IP ${connection.meta.ip} is in a white list (bot).`
-              );
-            }
-          }
-
-          req.forEach((key, value) => {
-            connection.meta.headers[key] = value;
-            this.log.debug(`Connection id${connectionId} header: '${key}': '${value}'`);
-          });
-
-          /**
-           * Ban check.
-           */
-          if (this.app.storage.ipBanList.has(connection.meta.ip)) {
-            const ipBan = this.app.storage.ipBanList.get(connection.meta.ip);
-
-            if (ipBan.expire > connection.meta.createdAt) {
-              this.log.info('IP is banned. Connection refused.', {
-                ip: connection.meta.ip,
-                connection: connectionId,
-              });
-
-              this.app.events.emit(
-                RESPONSE_PLAYER_BAN,
-                connectionId,
-                ipBan.reason === ERRORS_PACKET_FLOODING_DETECTED
-              );
-
-              setTimeout(() => {
-                this.app.events.emit(CONNECTIONS_BREAK, connectionId);
-              }, 100);
-
-              return;
-            }
-
-            this.app.events.emit(CONNECTIONS_UNBAN_IP, connection.meta.ip);
-          }
-
-          /**
-           * Max IP connections check.
-           */
-          let connectionsCounter = 1;
-
-          if (this.app.storage.connectionByIPCounter.has(connection.meta.ip)) {
-            connectionsCounter = this.app.storage.connectionByIPCounter.get(connection.meta.ip) + 1;
-          }
-
-          if (
-            connectionsCounter >
-              this.app.config.maxPlayersPerIP * CONNECTIONS_PLAYERS_TO_CONNECTIONS_MULTIPLIER &&
-            !this.app.storage.ipWhiteList.has(connection.meta.ip)
-          ) {
-            this.log.info('Max connections per IP reached. Connection refused.', {
-              ip: connection.meta.ip,
-              connection: connectionId,
-            });
-
-            this.app.events.emit(CONNECTIONS_BREAK, connectionId);
-          } else {
-            this.app.storage.connectionByIPCounter.set(connection.meta.ip, connectionsCounter);
-
-            connection.meta.status = CONNECTIONS_STATUS.ESTABLISHED;
-
-            /**
-             * Awaiting for Login package.
-             */
-            connection.meta.timeouts.login = setTimeout(() => {
-              this.app.events.emit(TIMEOUT_LOGIN, connectionId);
-            }, CONNECTIONS_PACKET_LOGIN_TIMEOUT_MS);
-          }
-        },
-
-        message: (connection: PlayerConnection, message, isBinary) => {
-          if (isBinary === true) {
-            try {
-              this.app.events.emit(CONNECTIONS_PACKET_RECEIVED, message, connection.meta.id);
-            } catch (err) {
-              this.log.error(`Connection id${connection.meta.id} error.`, err.stack);
-            }
-          } else {
-            this.log.debug(`Connection id${connection.meta.id} message isn't binary.`);
-            this.app.events.emit(CONNECTIONS_BREAK, connection.meta.id);
-          }
-        },
-
-        drain: connection => {
-          this.log.debug(`WebSocket backpressure: ${connection.getBufferedAmount()}`);
-        },
-
-        close: (connection: PlayerConnection, code) => {
-          this.log.debug(`Connection id${connection.meta.id} was closed, code ${code}`);
-
-          const connectionsCounter =
-            this.app.storage.connectionByIPCounter.get(connection.meta.ip) - 1;
-
-          if (connectionsCounter === 0) {
-            this.app.storage.connectionByIPCounter.delete(connection.meta.ip);
-          } else {
-            this.app.storage.connectionByIPCounter.set(connection.meta.ip, connectionsCounter);
-          }
-
-          try {
-            this.app.events.emit(CONNECTIONS_CLOSED, connection.meta.id);
-          } catch (err) {
-            this.log.error(`Connection id${connection.meta.id} closing error.`, err.stack);
-          }
-        },
-      })
-
-      .get('/ping', res => {
-        res.end('{"pong":1}');
-      })
-
-      .get('/', res => {
-        res.end(`{"players":${this.app.storage.playerList.size}}`);
-      })
-
-      .any('/*', res => {
-        res.writeStatus('404 Not Found').end('');
-      });
-
-    if (this.app.config.admin.active === true) {
-      this.uws
-        .get(`/${this.app.config.admin.route}/server`, res => {
-          res.writeHeader('Content-type', 'application/json');
-          res.end(`{"type":${this.app.config.server.typeId}}`);
-        })
-
-        .get(`/${this.app.config.admin.route}/actions`, res => {
-          res.writeHeader('Content-type', 'application/json');
-          res.end(`[${this.moderatorActions.join(',\n')}]`);
-        })
-
-        .post(`/${this.app.config.admin.route}/actions`, res => {
-          readRequest(
-            res,
-            (requestData: string) => {
-              this.onActionsPost(res, requestData);
-            },
-            () => {
-              this.log.error('failed to parse /actions POST');
-            }
-          );
-        })
-
-        .get(`/${this.app.config.admin.route}/players`, res => {
-          const now = Date.now();
-          const list = [];
-
-          this.app.storage.playerList.forEach(player =>
-            list.push({
-              name: player.name.current,
-              id: player.id.current,
-              captures: player.captures.current,
-              spectate: player.spectate.current,
-              kills: player.kills.current,
-              deaths: player.deaths.current,
-              score: player.score.current,
-              lastMove: player.times.lastMove,
-              ping: player.ping.current,
-              flag: player.flag.current,
-              isMuted: player.times.unmuteTime > now,
-              isBot: this.app.storage.botIdList.has(player.id.current),
-            })
-          );
-
-          res.writeHeader('Content-type', 'application/json');
-          res.end(JSON.stringify(list, null, 2));
-        })
-
-        .get(`/${this.app.config.admin.route}/`, async res => {
-          res.onAborted(() => {
-            // Do nothing.
-          });
-
-          try {
-            res.writeHeader('Content-type', 'text/html');
-            res.end(await readFile(app.config.admin.htmlPath));
-          } catch (e) {
-            res.end(`internal error: ${e}`);
-          }
+      while (player !== undefined) {
+        list.push({
+          id: player.id.current,
+          name: player.name.current,
+          captures: player.captures.current,
+          spectate: player.spectate.current,
+          kills: player.kills.current,
+          deaths: player.deaths.current,
+          score: player.score.current,
+          lastMove: player.times.lastMove,
+          ping: player.ping.current,
+          flag: player.flag.current,
+          isMuted: player.times.unmuteTime > now,
+          isBot: player.bot.current,
         });
 
-      if (this.app.config.server.typeId === GAME_TYPES.CTF) {
-        if (this.app.config.ctfSaveMatchesResults) {
-          const matchesDir = joinPath(this.app.config.cache.path, 'matches');
-
-          /**
-           * Get the list of the matches history records.
-           * Temporary route.
-           */
-          this.uws
-            .post(`/${this.app.config.admin.route}/matches`, async res => {
-              readRequest(
-                res,
-                async (requestData: string) => {
-                  const isAuth = await this.isModAuthorized(requestData);
-
-                  if (isAuth === true) {
-                    try {
-                      const files = JSON.stringify(await readDir(matchesDir));
-
-                      res.writeHeader('Content-type', 'application/json');
-                      res.end(files);
-                    } catch (err) {
-                      this.log.error(`Error while reading ${matchesDir}`, err.stack);
-
-                      res.writeStatus('500 Internal Server Error').end('');
-                    }
-                  } else {
-                    res.writeStatus('403 Forbidden').end('');
-                  }
-                },
-                () => {
-                  this.log.error('failed to parse /matches POST');
-                }
-              );
-            })
-
-            /**
-             * Get the match record.
-             * Temporary route.
-             */
-            .post(`/${this.app.config.admin.route}/matches/:timestamp`, async (res, req) => {
-              const timestamp = parseInt(req.getParameter(0), 10);
-
-              readRequest(
-                res,
-                async (requestData: string) => {
-                  const isAuth = await this.isModAuthorized(requestData);
-
-                  if (isAuth === true) {
-                    try {
-                      const content = await readFile(joinPath(matchesDir, `${timestamp}.json`));
-
-                      res.writeHeader('Content-type', 'application/json');
-                      res.end(content);
-                    } catch (err) {
-                      this.log.error(
-                        `Error while reading ${matchesDir}${timestamp}.json`,
-                        err.stack
-                      );
-
-                      res.writeStatus('404 Not Found').end('');
-                    }
-                  } else {
-                    res.writeStatus('403 Forbidden').end('');
-                  }
-                },
-                () => {
-                  this.log.error('failed to parse /matches/:timestamp POST');
-                }
-              );
-            });
-        }
-      }
-    }
-  }
-
-  protected async getModeratorByPassword(password: string): Promise<string | boolean> {
-    if (typeof password === 'undefined') {
-      return false;
-    }
-
-    let file = null;
-
-    try {
-      file = await readFile(this.app.config.admin.passwordsPath);
-    } catch (e) {
-      this.log.error(`Cannot read mod passwords: ${e}`);
-
-      return false;
-    }
-
-    const lines = file.toString().split('\n');
-
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i];
-
-      if (line.indexOf(':') !== -1) {
-        const [name, test] = line.split(':');
-
-        if (test === password) {
-          return name;
-        }
+        player = playersIterator.next().value;
       }
     }
 
-    this.log.error('Failed mod password attempt');
-
-    return false;
+    this.worker.postMessage({
+      event: WS_WORKER_GET_PLAYERS_LIST_RESPONSE,
+      args: [list],
+    });
   }
 
-  protected async isModAuthorized(requestData: string): Promise<boolean> {
-    const params = querystring.parse(requestData);
-    const mod = await this.getModeratorByPassword(params.password as string);
+  /**
+   * Handle just opened connection.
+   *
+   * @param workerConnectionMeta
+   */
+  connectionOpened(workerConnectionMeta: WorkerConnectionMeta): void {
+    const connectionMeta: ConnectionMeta = {
+      id: workerConnectionMeta.id,
+      ip: workerConnectionMeta.ip,
+      isBackup: false,
+      isMain: false,
+      status: CONNECTIONS_STATUS.OPENED,
+      headers: workerConnectionMeta.headers,
+      isBot: false,
+      playerId: null,
+      teamId: null,
+      userId: null,
+      lastPacketAt: workerConnectionMeta.createdAt,
+      createdAt: workerConnectionMeta.createdAt,
 
-    return mod !== false;
-  }
+      lagging: {
+        isActive: false,
+        lastAt: 0,
+        lastDuration: 0,
+        detects: 0,
+        packets: 0,
+      },
 
-  protected async onActionsPost(res: uws.HttpResponse, requestData: string): Promise<void> {
-    const params = querystring.parse(requestData);
-    const mod = await this.getModeratorByPassword(params.password as string);
+      periodic: {
+        ping: null,
+      },
 
-    if (mod === false) {
-      res.end('Invalid password');
+      timeouts: {
+        login: null,
+        ack: null,
+        backup: null,
+        pong: null,
+        respawn: null,
+        lagging: null,
+      },
 
-      return;
+      pending: {
+        login: false,
+        respawn: false,
+        spectate: false,
+      },
+
+      limits: {
+        any: 0,
+        chat: 0,
+        key: 0,
+        respawn: 0,
+        spectate: 0,
+        su: 0,
+        debug: 0,
+        spam: 0,
+      },
+    };
+    const connectionId = connectionMeta.id;
+    const connection = this.storage.connectionList
+      .set(connectionId, connectionMeta)
+      .get(connectionId);
+    const { ip } = connection;
+
+    /**
+     * Detect bots.
+     */
+    if (
+      !this.app.config.whitelist ||
+      this.storage.ipWhiteList.has(ip) ||
+      (!has(connectionMeta.headers, 'user-agent') && this.app.config.env === 'development')
+    ) {
+      connection.isBot = true;
     }
 
-    const playerId = parseInt(params.playerid as string, 10);
+    /**
+     * Ban check.
+     */
+    if (this.storage.ipBanList.has(ip)) {
+      const ipBan = this.storage.ipBanList.get(ip);
 
-    if (!this.app.storage.playerList.has(playerId)) {
-      res.end('Invalid player');
+      if (ipBan.expire > connection.createdAt) {
+        this.log.info('Connection refused. IP is banned: %o', {
+          connectionId,
+          ip,
+        });
 
-      return;
-    }
-
-    const player = this.app.storage.playerList.get(playerId);
-
-    switch (params.action) {
-      case 'Mute':
-        this.log.info(`Muting IP ${player.ip.current} (${playerId}: ${player.name.current})`);
-        this.app.events.emit(CHAT_MUTE_BY_IP, player.ip.current, CHAT_SUPERUSER_MUTE_TIME_MS);
-        break;
-
-      case 'Unmute':
-        this.log.info(`Unmuting IP: ${player.ip.current}`);
-        this.app.events.emit(CHAT_UNMUTE_BY_IP, player.ip.current);
-        break;
-
-      case 'Dismiss':
-        this.log.info(`Dismissing player ${playerId}`);
-        this.app.events.emit(CTF_REMOVE_PLAYER_FROM_LEADER, playerId);
-        break;
-
-      case 'Kick':
-        this.log.info(`Kicking player ${playerId}`);
-        this.app.events.emit(PLAYERS_KICK, playerId);
-        break;
-
-      case 'Ban':
-        this.log.info(`Banning IP: ${player.ip.current}`);
-        this.app.events.emit(
-          CONNECTIONS_BAN_IP,
-          player.ip.current,
-          CONNECTIONS_SUPERUSER_BAN_MS,
-          `${mod}: ${params.reason}`
+        this.events.emit(
+          RESPONSE_PLAYER_BAN,
+          connectionId,
+          ipBan.reason === ERRORS_PACKET_FLOODING_DETECTED
         );
-        this.app.events.emit(PLAYERS_KICK, playerId);
-        break;
 
-      default:
-        res.end('Invalid action');
+        setTimeout(() => {
+          this.closeConnection(connectionId);
+        }, 100);
 
         return;
+      }
+
+      this.events.emit(CONNECTIONS_UNBAN_IP, ip);
     }
 
-    this.moderatorActions.push(
-      JSON.stringify({
-        date: Date.now(),
-        who: mod,
-        action: params.action,
-        victim: player.name.current,
-        reason: params.reason,
-      })
-    );
+    /**
+     * Max IP connections check.
+     */
+    let connectionsCounter = 1;
 
-    while (this.moderatorActions.length > 100) {
-      this.moderatorActions.shift();
+    if (this.storage.connectionByIPCounter.has(ip)) {
+      connectionsCounter = this.storage.connectionByIPCounter.get(ip) + 1;
     }
 
-    res.end('OK');
+    if (
+      connectionsCounter >
+        this.app.config.maxPlayersPerIP * CONNECTIONS_PLAYERS_TO_CONNECTIONS_MULTIPLIER &&
+      !this.storage.ipWhiteList.has(ip)
+    ) {
+      this.log.info('Connection refused: max connections per IP reached: %o', {
+        connectionId,
+        ip,
+      });
+
+      this.closeConnection(connectionId);
+    } else {
+      this.storage.connectionByIPCounter.set(ip, connectionsCounter);
+      connection.status = CONNECTIONS_STATUS.ESTABLISHED;
+    }
+
+    /**
+     * Awaiting for Login packet.
+     */
+    connection.timeouts.login = setTimeout(() => {
+      this.events.emit(TIMEOUT_LOGIN, connectionId);
+    }, CONNECTIONS_PACKET_LOGIN_TIMEOUT_MS);
   }
 
-  async run(): Promise<void> {
+  /**
+   * Send event to worker to close the connection.
+   *
+   * @param connectionId
+   */
+  closeConnection(connectionId: ConnectionId): void {
+    this.worker.postMessage({
+      event: WS_WORKER_CONNECTION_CLOSE,
+      args: [connectionId],
+    });
+  }
+
+  /**
+   * Encode and pass binary packet to the worker to send it to the connection(s).
+   *
+   * Use `exceptions` array to prevent sending to some clients.
+   * If `exceptions` array contains connection identifier,
+   * this identifier must exist in `connectionId` array.
+   *
+   * Exceptions array mustn't contain any garbage.
+   *
+   * @param msg packet object
+   * @param connectionId connectionId or array of unique connectionIds
+   * @param exceptions array of unique connectionIds
+   */
+  sendPackets(
+    msg: ProtocolPacket,
+    connectionId: ConnectionId | ConnectionId[],
+    exceptions: ConnectionId[] = null
+  ): void {
+    let packet: ArrayBuffer;
+    let packetsAmount = 1;
+
     try {
-      await new Promise((resolve, reject) => {
-        this.uws.listen(this.app.config.host, this.app.config.port, listenSocket => {
-          if (!listenSocket) {
-            return reject(listenSocket);
-          }
+      packet = marshalServerMessage(msg);
+    } catch (err) {
+      this.log.error('Message encoding error: %o', { error: err.stack });
 
-          this.log.info(
-            `WS/HTTP server listening on ${this.app.config.host}:${this.app.config.port}.`
-          );
+      return;
+    }
 
-          this.log.debug(
-            `WebSocket compression ${this.app.config.compression ? 'enabled' : 'disabled'}.`
-          );
+    if (Array.isArray(connectionId)) {
+      packetsAmount = connectionId.length;
 
-          return resolve();
+      if (exceptions !== null) {
+        packetsAmount -= exceptions.length;
+      }
+    }
+
+    this.app.metrics.packets.out += packetsAmount;
+    this.app.metrics.transfer.outB += packet.byteLength * packetsAmount;
+
+    if (this.app.metrics.collect === true) {
+      this.app.metrics.sample.ppsOut += packetsAmount;
+      this.app.metrics.sample.tOut += packet.byteLength * packetsAmount;
+    }
+
+    this.worker.postMessage({
+      event: WS_WORKER_SEND_PACKETS,
+      args: [packet, connectionId, exceptions],
+    });
+  }
+
+  /**
+   * Emit players amount update to the worker.
+   */
+  updatePlayersAmount(): void {
+    this.worker.postMessage({
+      event: WS_WORKER_UPDATE_PLAYERS_AMOUNT,
+      args: [this.storage.playerList.size],
+    });
+  }
+
+  /**
+   * Run WS worker.
+   */
+  async start(): Promise<void> {
+    this.worker = new Worker('./dist/endpoints/worker/worker.js', {
+      workerData: {
+        config: this.app.config,
+      },
+    });
+
+    this.worker.on('exit', exitCode => {
+      if (exitCode === 0) {
+        process.exit();
+      }
+
+      this.log.fatal('UWS worker is down: %o', { exitCode });
+      process.exit(exitCode);
+    });
+
+    /**
+     * Re-emit events from the worker.
+     */
+    this.worker.on('message', msg => {
+      try {
+        this.events.emit(msg.event, ...msg.args);
+      } catch (err) {
+        this.log.error('Error re-emitting event from the WS worker: %o', {
+          event: msg.event,
+        });
+      }
+    });
+
+    return new Promise((resolve, reject) => {
+      this.worker.on('online', () => {
+        this.log.debug('UWS worker started.');
+
+        this.events.once(WS_WORKER_STARTED, () => {
+          resolve();
         });
       });
-    } catch (err) {
-      this.log.error(err);
 
-      process.exit(1);
-    }
+      this.worker.on('error', () => {
+        this.log.error('Error starting UWS worker.');
+
+        reject();
+      });
+    });
   }
 
-  protected static decodeIPv4(rawIp: ArrayBuffer): IPv4 {
-    return new Uint8Array(rawIp).join('.');
+  stop(): void {
+    this.worker.postMessage({
+      event: WS_WORKER_STOP,
+      args: [],
+    });
   }
 }

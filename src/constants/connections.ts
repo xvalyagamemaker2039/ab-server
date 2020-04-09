@@ -5,7 +5,7 @@ import {
   MINUTES_PER_HOUR,
   SECONDS_PER_MINUTE,
   HOURS_PER_DAY,
-} from '@/constants/units';
+} from './units';
 
 export const CONNECTIONS_WEBSOCKETS_COMPRESSION = true;
 
@@ -82,3 +82,10 @@ export const CONNECTIONS_LAGGING_DEFINE_VALUE_MS = 1500;
 export const CONNECTIONS_LAGGING_DROP_INTERVAL_MS = 100;
 
 export const CONNECTIONS_LAG_PACKETS_TO_DISCONNECT = 2000;
+
+/**
+ * If >, then disconnect. Bytes.
+ */
+export const CONNECTIONS_MAX_BACKPRESSURE = 100;
+
+export const CONNECTIONS_LAGS_CHECK_INTERVAL_TICKS = 10;

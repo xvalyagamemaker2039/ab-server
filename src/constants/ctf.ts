@@ -1,5 +1,5 @@
 import { CTF_TEAMS } from '@airbattle/protocol';
-import { MS_PER_SEC, SECONDS_PER_MINUTE } from '@/constants/units';
+import { MS_PER_SEC, SECONDS_PER_MINUTE } from './units';
 
 export const CTF_NEW_GAME_ALERT_DURATION_MS = 15 * MS_PER_SEC;
 

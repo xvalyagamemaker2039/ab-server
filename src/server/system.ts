@@ -1,17 +1,17 @@
 import EventEmitter, { ListenerFn } from 'eventemitter3';
-import GameServer from '@/core/server';
-import { EventChannel } from '@/server/channels/channel';
-import { CHANNEL_DEFAULT } from '@/server/channels';
-import { Helpers } from '@/server/helpers';
-import { GameStorage } from '@/server/storage';
-import Logger from '@/logger';
-import { Channels } from '@/server/channels/channels';
+import GameServerBootstrap from '../core/bootstrap';
+import { CHANNEL_DEFAULT } from '../events/channels';
+import Logger from '../logger';
+import { Channels } from './channels';
+import { EventChannel } from './event-channel';
+import Helpers from './helpers';
+import { GameStorage } from './storage';
 
 export class System {
   /**
    * Reference to the game server app.
    */
-  protected app: GameServer;
+  protected app: GameServerBootstrap;
 
   /**
    * Reference to the log.
@@ -77,7 +77,10 @@ export class System {
     try {
       this.events.emit(event, ...args);
     } catch (err) {
-      this.log.error(err, `Error while dispatching ${String(event)}`);
+      this.log.error('Event emit error: %o', {
+        event,
+        error: err.stack,
+      });
     }
   }
 

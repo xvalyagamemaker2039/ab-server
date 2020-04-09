@@ -6,6 +6,10 @@ export const PROJECTILES_SHAPES = {
   SMALL: 3,
 };
 
+/**
+ * The order is always from the front hitcircle to the back.
+ * Hitcircle at index 0 is used to find collisions with mountains.
+ */
 export const PROJECTILES_COLLISIONS = {
   [PROJECTILES_SHAPES.REGULAR]: [
     [0, 3, 3],

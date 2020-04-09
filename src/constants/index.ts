@@ -1,41 +1,41 @@
-export * from '@/constants/auth';
+export * from './auth';
 
-export * from '@/constants/bots';
+export * from './bots';
 
-export * from '@/constants/btr';
+export * from './btr';
 
-export * from '@/constants/chat';
+export * from './chat';
 
-export * from '@/constants/collisions';
+export * from './collisions';
 
-export * from '@/constants/connections';
+export * from './connections';
 
-export * from '@/constants/ctf';
+export * from './ctf';
 
-export * from '@/constants/ffa';
+export * from './ffa';
 
-export * from '@/constants/limits';
+export * from './limits';
 
-export * from '@/constants/logs';
+export * from './logs';
 
-export * from '@/constants/metrics';
+export * from './metrics';
 
-export * from '@/constants/mountains';
+export * from './mountains';
 
-export * from '@/constants/players';
+export * from './players';
 
-export * from '@/constants/powerups';
+export * from './powerups';
 
-export * from '@/constants/projectiles';
+export * from './projectiles';
 
-export * from '@/constants/repel';
+export * from './repel';
 
-export * from '@/constants/server';
+export * from './server';
 
-export * from '@/constants/ships';
+export * from './ships';
 
-export * from '@/constants/units';
+export * from './units';
 
-export * from '@/constants/upgrades';
+export * from './upgrades';
 
-export * from '@/constants/user-stats';
+export * from './user-stats';

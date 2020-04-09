@@ -8,6 +8,8 @@ export const KB_PER_MB = 1024;
 
 export const BYTES_PER_MB = BYTES_PER_KB * KB_PER_MB;
 
+export const MB_PER_GB = 1024;
+
 export const NS_PER_SEC = 1e9;
 
 export const US_PER_SEC = 1e6;

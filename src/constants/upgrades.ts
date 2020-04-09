@@ -1,5 +1,5 @@
 import { GAME_TYPES } from '@airbattle/protocol';
-import { MS_PER_SEC } from '@/constants';
+import { MS_PER_SEC } from './units';
 
 export const UPGRADES_DEFAULT_MIN_CHANCE = 0.3;
 

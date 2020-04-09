@@ -1,5 +1,5 @@
 import { MOB_TYPES } from '@airbattle/protocol';
-import { MissileTemplate, FireTemplate } from '@/types';
+import { MissileTemplate, FireTemplate } from '../types';
 
 export const SHIPS_TYPES = {
   PREDATOR: 1,

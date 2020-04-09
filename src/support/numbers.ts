@@ -44,12 +44,17 @@ export const median = (dataset: number[]): number => {
 };
 
 export const numberToHumanReadable = (value: number): string => {
-  const l1000 = value % 1000;
-  const hds = (value - l1000) / 1000;
+  if (value > 99999) {
+    const m = Math.round((value / 1e6) * 100) / 100;
 
-  if (hds === 0) {
-    return `${value}`;
+    return `${m}M`;
   }
 
-  return `${hds}K`;
+  if (value > 999) {
+    const k = Math.round((value / 1000) * 10) / 10;
+
+    return `${k}K`;
+  }
+
+  return `${value}`;
 };

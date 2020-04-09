@@ -13,6 +13,7 @@ import {
   CONNECTIONS_FLOODING_AUTOBAN,
   CONNECTIONS_INVALID_PROTOCOL_AUTOKICK,
   CONNECTIONS_WEBSOCKETS_COMPRESSION,
+  CTF_BASE_SHIELD_RANDOM_INTERVAL_SEC,
   CTF_QBOTS_FEATURES,
   CTF_SAVE_RESULTS_TO_FILES,
   LIMITS_ANY,
@@ -42,10 +43,9 @@ import {
   UPGRADES_DEFAULT_MAX_CHANCE,
   UPGRADES_DEFAULT_MIN_CHANCE,
   USER_ACCOUNTS,
-  CTF_BASE_SHIELD_RANDOM_INTERVAL_SEC,
-} from '@/constants';
-import { has } from '@/support/objects';
-import { IPv4 } from '@/types';
+} from '../constants';
+import { has } from '../support/objects';
+import { IPv4 } from '../types';
 
 export interface GameServerConfigInterface {
   /**
@@ -99,9 +99,14 @@ export interface GameServerConfigInterface {
     level: string;
 
     /**
-     * Path to log file.
+     * Path to the log file.
      */
     path: string;
+
+    /**
+     * Path to the public chat log file.
+     */
+    chat: string;
 
     /**
      * Log to console.
@@ -279,6 +284,7 @@ export interface GameServerConfigInterface {
    * Server version.
    */
   version: string;
+  edition: string;
 }
 
 const appRootDir = resolve(__dirname, '../');
@@ -352,11 +358,18 @@ const parseWelcomeMessages = (value: string | undefined, def: string[]): string[
 };
 
 let logsPath = process.env.LOG_FILE || '';
+let chatLogsPath = process.env.LOG_CHAT_FILE || '';
 
 if (typeof process.env.LOG_FILE === 'string' && process.env.LOG_FILE.length === 0) {
   logsPath = '';
 } else {
   logsPath = resolvePath(strValue(process.env.LOG_FILE, '../logs/airbattle.log'));
+}
+
+if (typeof process.env.LOG_CHAT_FILE === 'string' && process.env.LOG_CHAT_FILE.length === 0) {
+  chatLogsPath = '';
+} else {
+  chatLogsPath = resolvePath(strValue(process.env.LOG_CHAT_FILE, '../logs/chat.log'));
 }
 
 const config: GameServerConfigInterface = {
@@ -388,6 +401,7 @@ const config: GameServerConfigInterface = {
   logs: {
     level: strValue(process.env.LOG_LEVEL, SERVER_DEFAULT_LOG_LEVEL),
     path: logsPath,
+    chat: chatLogsPath,
     console: boolValue(process.env.LOG_TO_CONSOLE, SERVER_DEFAULT_LOG_TO_CONSOLE),
     samples: boolValue(process.env.LOG_PERFORMANCE_SAMPLES, METRICS_LOG_SAMPLES),
   },
@@ -501,6 +515,8 @@ const config: GameServerConfigInterface = {
   botsNamePrefix: strValue(process.env.BOTS_NAME_PREFIX, BOTS_DEFAULT_NAME_PREFIX),
 
   version,
+
+  edition: strValue(process.env.SERVER_EDITION, 'v6-threads-develop'),
 };
 
 config.server.type = config.server.type.toLocaleUpperCase();
@@ -529,6 +545,11 @@ if (config.afkDisconnectTimeout === undefined) {
 
 mkdirSync(config.certs.path, { recursive: true });
 mkdirSync(dirname(config.logs.path), { recursive: true });
+
+if (config.logs.chat.length > 0) {
+  mkdirSync(dirname(config.logs.chat), { recursive: true });
+}
+
 mkdirSync(config.cache.path, { recursive: true });
 mkdirSync(dirname(config.userStats.path), { recursive: true });
 

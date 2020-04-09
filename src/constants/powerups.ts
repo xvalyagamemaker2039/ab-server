@@ -1,5 +1,5 @@
 import { GAME_TYPES, MOB_TYPES } from '@airbattle/protocol';
-import { MS_PER_SEC, SECONDS_PER_MINUTE } from '@/constants/units';
+import { MS_PER_SEC, SECONDS_PER_MINUTE } from './units';
 
 export const POWERUPS_DEFAULT_DURATION_MS = 10 * MS_PER_SEC;
 

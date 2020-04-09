@@ -1,5 +1,24 @@
 ## Future version (unversioned)
 
+- uWebSockets in worker
+- User accounts in worker, saving only if changes happened
+- Removed custom resolver
+- Common refactoring
+- Updated pino
+- Better typing
+- Collisions optimisation
+- Serialization with fast-json-stringify
+- Removed most debug logs
+- Log chat in file
+- New network metrics
+- /lags
+- Lighter /server debug
+- /server network
+- /server performance
+- /server frames
+- Disable KEY packets drop after lagging, only ACK.
+- Fix /say #51
+
 ## 5.10.0 (March 28, 2020)
 
 Features:
