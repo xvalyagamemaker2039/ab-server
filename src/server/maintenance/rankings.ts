@@ -11,7 +11,7 @@ import { bInsert } from '../../support/arrays';
 import { BountyRankingItem, Player, PlayerId } from '../../types';
 import { System } from '../system';
 
-const compareFn = (a: BountyRankingItem, b: BountyRankingItem): boolean => a.score > b.score;
+const compareFn = (a: BountyRankingItem, b: BountyRankingItem): boolean => a.score < b.score;
 
 export default class GameRankings extends System {
   constructor({ app }) {
