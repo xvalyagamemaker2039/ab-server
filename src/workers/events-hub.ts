@@ -1,4 +1,4 @@
-import { parentPort } from 'worker_threads';
+import { parentPort, isMainThread } from 'worker_threads';
 import EventEmitter from 'eventemitter3';
 
 /**
@@ -11,14 +11,16 @@ class WorkerHub {
   public events: EventEmitter;
 
   constructor() {
-    this.events = new EventEmitter();
+    if (!isMainThread) {
+      this.events = new EventEmitter();
 
-    /**
-     * Subscribe to main thread events and re-emit inside the worker.
-     */
-    parentPort.on('message', msg => {
-      this.events.emit(msg.event, ...msg.args);
-    });
+      /**
+       * Subscribe to main thread events and re-emit inside the worker.
+       */
+      parentPort.on('message', msg => {
+        this.events.emit(msg.event, ...msg.args);
+      });
+    }
   }
 
   /**

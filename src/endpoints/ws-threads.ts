@@ -1,49 +1,44 @@
-import { existsSync } from 'fs';
+import { Worker } from 'worker_threads';
 import { marshalServerMessage, ProtocolPacket } from '@airbattle/protocol';
 import EventEmitter from 'eventemitter3';
-import uws, { DISABLED } from 'uWebSockets.js';
 import {
-  CONNECTIONS_IDLE_TIMEOUT_SEC,
-  CONNECTIONS_MAX_BACKPRESSURE,
-  CONNECTIONS_MAX_PAYLOAD_BYTES,
   CONNECTIONS_PACKET_LOGIN_TIMEOUT_MS,
   CONNECTIONS_PLAYERS_TO_CONNECTIONS_MULTIPLIER,
   CONNECTIONS_STATUS,
-  CONNECTIONS_WEBSOCKETS_COMPRESSOR,
-  MAX_UINT32,
 } from '../constants';
 import GameServerBootstrap from '../core/bootstrap';
 import {
   CONNECTIONS_CLOSE,
-  CONNECTIONS_CLOSED,
-  CONNECTIONS_PACKET_RECEIVED,
   CONNECTIONS_SEND_PACKETS,
   CONNECTIONS_UNBAN_IP,
   ERRORS_PACKET_FLOODING_DETECTED,
+  PLAYERS_CREATED,
+  PLAYERS_REMOVED,
   RESPONSE_PLAYER_BAN,
   TIMEOUT_LOGIN,
+  WS_WORKER_CONNECTION_OPENED,
   WS_WORKER_GET_PLAYER,
   WS_WORKER_GET_PLAYERS_LIST,
   WS_WORKER_GET_PLAYERS_LIST_RESPONSE,
   WS_WORKER_GET_PLAYER_RESPONSE,
+  WS_WORKER_SEND_PACKETS,
+  WS_WORKER_STARTED,
+  WS_WORKER_STOP,
+  WS_WORKER_UPDATE_PLAYERS_AMOUNT,
 } from '../events';
 import Logger from '../logger';
 import { GameStorage } from '../server/storage';
-import { decodeIPv4 } from '../support/binary';
 import {
   AdminActionPlayer,
   AdminPlayersListItem,
   ConnectionId,
   ConnectionMeta,
   Player,
-  PlayerConnection,
   PlayerId,
   WorkerConnectionMeta,
 } from '../types';
-import ConnectionsStorage from './storage';
-import Admin from './worker/admin';
 
-export default class WsEndpoint {
+export default class WsEndpointThreads {
   private app: GameServerBootstrap;
 
   private log: Logger;
@@ -52,49 +47,27 @@ export default class WsEndpoint {
 
   private events: EventEmitter;
 
-  private uws: uws.TemplatedApp;
-
-  private wsStorage: ConnectionsStorage;
+  private worker: Worker;
 
   constructor({ app }) {
     this.app = app;
     this.log = this.app.log;
     this.storage = this.app.storage;
     this.events = this.app.events;
-    this.wsStorage = new ConnectionsStorage();
 
     /**
      * Event handlers.
      */
     this.events.on(CONNECTIONS_CLOSE, this.closeConnection, this);
+    this.events.on(WS_WORKER_CONNECTION_OPENED, this.connectionOpened, this);
 
     this.events.on(CONNECTIONS_SEND_PACKETS, this.sendPackets, this);
 
+    this.events.on(PLAYERS_CREATED, this.updatePlayersAmount, this);
+    this.events.on(PLAYERS_REMOVED, this.updatePlayersAmount, this);
+
     this.events.on(WS_WORKER_GET_PLAYER, this.getAdminPlayerById, this);
     this.events.on(WS_WORKER_GET_PLAYERS_LIST, this.getAdminPlayersList, this);
-
-    /**
-     * Setup endpoint.
-     */
-    if (this.app.config.tls) {
-      const tlsConfig = {
-        key_file_name: `${this.app.config.certs.path}/privkey.pem`, // eslint-disable-line
-        cert_file_name: `${this.app.config.certs.path}/fullchain.pem`, // eslint-disable-line
-        dh_params_file_name: `${this.app.config.certs.path}/dhparam.pem`, // eslint-disable-line
-      };
-
-      if (!existsSync(tlsConfig.dh_params_file_name)) {
-        delete tlsConfig.dh_params_file_name;
-      }
-
-      this.uws = uws.SSLApp(tlsConfig);
-    } else {
-      this.uws = uws.App({});
-    }
-
-    this.bindWebsocketHandlers();
-    this.bindHttpRoutes();
-    new Admin(this.app.config, this.app).bindRoutes(this.uws);
   }
 
   /**
@@ -113,7 +86,10 @@ export default class WsEndpoint {
       };
     }
 
-    this.app.events.emit(WS_WORKER_GET_PLAYER_RESPONSE, actionPlayerData);
+    this.worker.postMessage({
+      event: WS_WORKER_GET_PLAYER_RESPONSE,
+      args: [actionPlayerData],
+    });
   }
 
   /**
@@ -147,7 +123,10 @@ export default class WsEndpoint {
       }
     }
 
-    this.app.events.emit(WS_WORKER_GET_PLAYERS_LIST_RESPONSE, list);
+    this.worker.postMessage({
+      event: WS_WORKER_GET_PLAYERS_LIST_RESPONSE,
+      args: [list],
+    });
   }
 
   /**
@@ -283,6 +262,18 @@ export default class WsEndpoint {
   }
 
   /**
+   * Send event to worker to close the connection.
+   *
+   * @param connectionId
+   */
+  closeConnection(connectionId: ConnectionId): void {
+    this.worker.postMessage({
+      event: CONNECTIONS_CLOSE,
+      args: [connectionId],
+    });
+  }
+
+  /**
    * Encode and pass binary packet to the worker to send it to the connection(s).
    *
    * Use `exceptions` array to prevent sending to some clients.
@@ -317,14 +308,6 @@ export default class WsEndpoint {
       if (exceptions !== null) {
         packetsAmount -= exceptions.length;
       }
-
-      for (let index = 0; index < connectionId.length; index += 1) {
-        if (exceptions === null || !exceptions.includes(connectionId[index])) {
-          this.sendPacket(packet, connectionId[index]);
-        }
-      }
-    } else {
-      this.sendPacket(packet, connectionId);
     }
 
     this.app.metrics.packets.out += packetsAmount;
@@ -334,206 +317,76 @@ export default class WsEndpoint {
       this.app.metrics.sample.ppsOut += packetsAmount;
       this.app.metrics.sample.tOut += packet.byteLength * packetsAmount;
     }
+
+    this.worker.postMessage({
+      event: WS_WORKER_SEND_PACKETS,
+      args: [packet, connectionId, exceptions],
+    });
+  }
+
+  /**
+   * Emit players amount update to the worker.
+   */
+  updatePlayersAmount(): void {
+    this.worker.postMessage({
+      event: WS_WORKER_UPDATE_PLAYERS_AMOUNT,
+      args: [this.storage.playerList.size],
+    });
   }
 
   /**
    * Run WS worker.
    */
   async start(): Promise<void> {
-    return new Promise((resolve, reject) => {
+    this.worker = new Worker('./dist/endpoints/worker/worker.js', {
+      workerData: {
+        config: this.app.config,
+      },
+    });
+
+    this.worker.on('exit', exitCode => {
+      if (exitCode === 0) {
+        process.exit();
+      }
+
+      this.log.fatal('UWS worker is down: %o', { exitCode });
+      process.exit(exitCode);
+    });
+
+    /**
+     * Re-emit events from the worker.
+     */
+    this.worker.on('message', msg => {
       try {
-        this.uws.listen(this.app.config.host, this.app.config.port, listenSocket => {
-          if (!listenSocket) {
-            reject();
-
-            process.exit(1);
-          }
-
-          resolve();
-
-          this.log.info('WS/HTTP server started: %o', {
-            host: this.app.config.host,
-            port: this.app.config.port,
-            compression: this.app.config.compression,
-            tls: this.app.config.tls,
-          });
-        });
+        this.events.emit(msg.event, ...msg.args);
       } catch (err) {
-        this.log.error('WS/HTTP failed to start: %o', {
-          host: this.app.config.host,
-          port: this.app.config.port,
-          compression: this.app.config.compression,
-          tls: this.app.config.tls,
-          error: err.stack,
+        this.log.error('Error re-emitting event from the WS worker: %o', {
+          event: msg.event,
         });
+      }
+    });
+
+    return new Promise((resolve, reject) => {
+      this.worker.on('online', () => {
+        this.log.debug('UWS worker started.');
+
+        this.events.once(WS_WORKER_STARTED, () => {
+          resolve();
+        });
+      });
+
+      this.worker.on('error', () => {
+        this.log.error('Error starting UWS worker.');
 
         reject();
-
-        process.exit(1);
-      }
+      });
     });
   }
 
   stop(): void {
-    this.log.debug('WS stopped.');
-    process.exit();
-  }
-
-  private sendPacket(packet: ArrayBuffer, connectionId: ConnectionId): void {
-    try {
-      if (!this.wsStorage.connectionList.has(connectionId)) {
-        return;
-      }
-
-      const ws = this.wsStorage.connectionList.get(connectionId);
-
-      if (ws.getBufferedAmount() !== 0) {
-        this.log.info('Slow connection, buffer > 0: %o', {
-          connectionId,
-          bufferSize: ws.getBufferedAmount(),
-        });
-      }
-
-      const result = ws.send(packet, true, this.app.config.compression);
-
-      if (!result) {
-        this.log.debug('Packet sending failed: %o', {
-          connectionId,
-          bufferSize: ws.getBufferedAmount(),
-          packerSize: packet.byteLength,
-        });
-      }
-    } catch (err) {
-      this.log.error('Packet sending error: %o', {
-        connectionId,
-        packerSize: packet.byteLength,
-        error: err.stack,
-      });
-    }
-  }
-
-  private closeConnection(connectionId: ConnectionId): void {
-    try {
-      if (!this.wsStorage.connectionList.has(connectionId)) {
-        return;
-      }
-
-      const ws = this.wsStorage.connectionList.get(connectionId);
-
-      ws.close();
-    } catch (err) {
-      this.log.error('Connection closing error: %o', { connectionId, error: err.stack });
-    }
-  }
-
-  private bindWebsocketHandlers(): void {
-    this.uws.ws('/*', {
-      compression: this.app.config.compression ? CONNECTIONS_WEBSOCKETS_COMPRESSOR : DISABLED,
-      maxPayloadLength: CONNECTIONS_MAX_PAYLOAD_BYTES,
-      maxBackpressure: CONNECTIONS_MAX_BACKPRESSURE,
-      idleTimeout: CONNECTIONS_IDLE_TIMEOUT_SEC,
-
-      open: (connection: PlayerConnection, req) => {
-        const connectionId = this.createConnectionId();
-        const now = Date.now();
-        const meta: WorkerConnectionMeta = {
-          id: connectionId,
-          ip: decodeIPv4(connection.getRemoteAddress()),
-          headers: {},
-          createdAt: now,
-        };
-
-        if (req.getHeader('x-forwarded-for') !== '') {
-          meta.ip = req.getHeader('x-forwarded-for');
-        } else if (req.getHeader('x-real-ip') !== '') {
-          meta.ip = req.getHeader('x-real-ip');
-        }
-
-        connection.meta = meta;
-
-        this.wsStorage.connectionList.set(connectionId, connection);
-
-        req.forEach((title, value) => {
-          meta.headers[title] = value;
-        });
-
-        this.log.debug('Connection opened: %o', {
-          connectionId,
-          ip: meta.ip,
-          method: req.getMethod(),
-          headers: meta.headers,
-        });
-
-        this.connectionOpened(meta);
-      },
-
-      message: (connection: PlayerConnection, message, isBinary) => {
-        if (isBinary === true) {
-          try {
-            this.events.emit(CONNECTIONS_PACKET_RECEIVED, message, connection.meta.id);
-          } catch (err) {
-            this.log.error('Connection onMessage error: %o', {
-              connectionId: connection.meta.id,
-              error: err.stack,
-            });
-          }
-        } else {
-          this.log.debug("Connection onMessage isn't binary: %o", {
-            connectionId: connection.meta.id,
-          });
-
-          this.closeConnection(connection.meta.id);
-        }
-      },
-
-      close: (connection: PlayerConnection, code) => {
-        const { id } = connection.meta;
-
-        try {
-          this.wsStorage.connectionList.delete(id);
-
-          this.log.debug('Connection closed: %o', { connectionId: id, code });
-
-          this.events.emit(CONNECTIONS_CLOSED, id);
-        } catch (err) {
-          this.log.error('Connection closing error: %o', { connectionId: id, error: err.stack });
-        }
-      },
+    this.worker.postMessage({
+      event: WS_WORKER_STOP,
+      args: [],
     });
-  }
-
-  private bindHttpRoutes(): void {
-    this.uws
-      .get('/ping', res => {
-        res.writeHeader('Content-type', 'application/json').end('{"pong":1}');
-      })
-
-      .get('/', res => {
-        res
-          .writeHeader('Content-type', 'application/json')
-          .end(`{"players":${this.storage.playerList.size}}`);
-      })
-
-      .any('/*', res => {
-        res.writeStatus('404 Not Found').end('');
-      });
-  }
-
-  private createConnectionId(): ConnectionId {
-    while (this.wsStorage.connectionList.has(this.wsStorage.nextConnectionId)) {
-      this.wsStorage.nextConnectionId += 1;
-
-      if (this.wsStorage.nextConnectionId >= MAX_UINT32) {
-        this.wsStorage.nextConnectionId = 1;
-      }
-    }
-
-    if (this.wsStorage.nextConnectionId >= MAX_UINT32) {
-      this.wsStorage.nextConnectionId = 1;
-    }
-
-    this.wsStorage.nextConnectionId += 1;
-
-    return this.wsStorage.nextConnectionId - 1;
   }
 }

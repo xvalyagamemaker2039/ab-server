@@ -20,6 +20,7 @@ import {
 import { AdminActionPlayer, AdminPlayersListItem } from '../../types';
 import { Hub, hub } from '../../workers/events-hub';
 import Log from '../../workers/logger';
+import GameServerBootstrap from '../../core/bootstrap';
 
 const { readFile, readdir } = fs;
 
@@ -35,7 +36,7 @@ const readRequest = (res: HttpResponse, cb: Function, errCb: () => void): void =
       try {
         cb(buffer.toString());
       } catch (err) {
-        Log.error('Reading request error: %o', { error: err.stack });
+        this.log.error('Reading request error: %o', { error: err.stack });
         res.close();
       }
     }
@@ -92,8 +93,19 @@ class Admin {
 
   private moderatorActions: string[] = [];
 
-  constructor(config: GameServerConfigInterface) {
+  private log: any;
+
+  private app: GameServerBootstrap;
+
+  constructor(config: GameServerConfigInterface, app?: GameServerBootstrap) {
     this.config = config;
+
+    if (config.threads) {
+      this.log = Log;
+    } else {
+      this.app = app;
+      this.log = app.log;
+    }
   }
 
   bindRoutes(uws: TemplatedApp): void {
@@ -118,7 +130,7 @@ class Admin {
               this.onActionsPost(res, requestData);
             },
             () => {
-              Log.error('Failed to parse /actions POST.');
+              this.log.error('Failed to parse /actions POST.');
             }
           );
         })
@@ -131,11 +143,19 @@ class Admin {
           });
 
           const playersList: AdminPlayersListItem[] = await new Promise(resolve => {
-            hub.events.once(WS_WORKER_GET_PLAYERS_LIST_RESPONSE, (playersData: any) => {
-              resolve(playersData);
-            });
+            if (this.config.threads) {
+              hub.events.once(WS_WORKER_GET_PLAYERS_LIST_RESPONSE, (playersData: any) => {
+                resolve(playersData);
+              });
 
-            Hub.emitToMain(WS_WORKER_GET_PLAYERS_LIST);
+              Hub.emitToMain(WS_WORKER_GET_PLAYERS_LIST);
+            } else {
+              this.app.events.once(WS_WORKER_GET_PLAYERS_LIST_RESPONSE, (playersData: any) => {
+                resolve(playersData);
+              });
+
+              this.app.events.emit(WS_WORKER_GET_PLAYERS_LIST);
+            }
           });
 
           if (!res.aborted) {
@@ -163,7 +183,7 @@ class Admin {
               res.writeStatus('503 Service Unavailable').end('');
             }
 
-            Log.error('Error reading admin html: %o', { error: err.stack });
+            this.log.error('Error reading admin html: %o', { error: err.stack });
           }
         });
 
@@ -200,7 +220,7 @@ class Admin {
                         res.writeStatus('500 Internal Server Error').end('');
                       }
 
-                      Log.error('Error while reading directory: %o', {
+                      this.log.error('Error while reading directory: %o', {
                         dir: matchesDir,
                         error: err.stack,
                       });
@@ -210,7 +230,7 @@ class Admin {
                   }
                 },
                 () => {
-                  Log.error('failed to parse /matches POST.');
+                  this.log.error('failed to parse /matches POST.');
                 }
               );
             })
@@ -246,7 +266,7 @@ class Admin {
                         res.writeStatus('404 Not Found').end('');
                       }
 
-                      Log.error('Error while reading file: %o', {
+                      this.log.error('Error while reading file: %o', {
                         file: `${matchesDir}${timestamp}.json`,
                         error: err.stack,
                       });
@@ -256,7 +276,7 @@ class Admin {
                   }
                 },
                 () => {
-                  Log.error('failed to parse /matches/:timestamp POST');
+                  this.log.error('failed to parse /matches/:timestamp POST');
                 }
               );
             });
@@ -275,7 +295,7 @@ class Admin {
     try {
       file = await readFile(this.config.admin.passwordsPath);
     } catch (err) {
-      Log.error('Cannot read mod passwords: %o', { error: err.stack });
+      this.log.error('Cannot read mod passwords: %o', { error: err.stack });
 
       return false;
     }
@@ -294,7 +314,7 @@ class Admin {
       }
     }
 
-    Log.error('Failed mod password attempt: %o', { password });
+    this.log.error('Failed mod password attempt: %o', { password });
 
     return false;
   }
@@ -327,11 +347,19 @@ class Admin {
     const playerId = parseInt(params.playerid as string, 10);
 
     const player: AdminActionPlayer = await new Promise(resolve => {
-      hub.events.once(WS_WORKER_GET_PLAYER_RESPONSE, (playerData: any) => {
-        resolve(playerData);
-      });
+      if (this.config.threads) {
+        hub.events.once(WS_WORKER_GET_PLAYER_RESPONSE, (playerData: any) => {
+          resolve(playerData);
+        });
 
-      Hub.emitToMain(WS_WORKER_GET_PLAYER, playerId);
+        Hub.emitToMain(WS_WORKER_GET_PLAYER, playerId);
+      } else {
+        this.app.events.once(WS_WORKER_GET_PLAYER_RESPONSE, (playerData: any) => {
+          resolve(playerData);
+        });
+
+        this.app.events.emit(WS_WORKER_GET_PLAYER, playerId);
+      }
     });
 
     if (player === null) {
@@ -346,34 +374,61 @@ class Admin {
 
     switch (params.action) {
       case 'Mute':
-        Hub.emitToMain(CHAT_MUTE_BY_IP, player.ip, CHAT_SUPERUSER_MUTE_TIME_MS);
+        if (this.config.threads) {
+          Hub.emitToMain(CHAT_MUTE_BY_IP, player.ip, CHAT_SUPERUSER_MUTE_TIME_MS);
+        } else {
+          this.app.events.emit(CHAT_MUTE_BY_IP, player.ip, CHAT_SUPERUSER_MUTE_TIME_MS);
+        }
 
         break;
 
       case 'Unmute':
-        Hub.emitToMain(CHAT_UNMUTE_BY_IP, player.ip);
+        if (this.config.threads) {
+          Hub.emitToMain(CHAT_UNMUTE_BY_IP, player.ip);
+        } else {
+          this.app.events.emit(CHAT_UNMUTE_BY_IP, player.ip);
+        }
 
         break;
 
       case 'Dismiss':
-        Hub.emitToMain(CTF_REMOVE_PLAYER_FROM_LEADER, playerId);
+        if (this.config.threads) {
+          Hub.emitToMain(CTF_REMOVE_PLAYER_FROM_LEADER, playerId);
+        } else {
+          this.app.events.emit(CTF_REMOVE_PLAYER_FROM_LEADER, playerId);
+        }
 
         break;
 
       case 'Kick':
-        Hub.emitToMain(PLAYERS_KICK, playerId);
+        if (this.config.threads) {
+          Hub.emitToMain(PLAYERS_KICK, playerId);
+        } else {
+          this.app.events.emit(PLAYERS_KICK, playerId);
+        }
 
         break;
 
       case 'Ban':
-        Hub.emitToMain(
-          CONNECTIONS_BAN_IP,
-          player.ip,
-          CONNECTIONS_SUPERUSER_BAN_MS,
-          `${mod}: ${params.reason}`
-        );
+        if (this.config.threads) {
+          Hub.emitToMain(
+            CONNECTIONS_BAN_IP,
+            player.ip,
+            CONNECTIONS_SUPERUSER_BAN_MS,
+            `${mod}: ${params.reason}`
+          );
 
-        Hub.emitToMain(PLAYERS_KICK, playerId);
+          Hub.emitToMain(PLAYERS_KICK, playerId);
+        } else {
+          this.app.events.emit(
+            CONNECTIONS_BAN_IP,
+            player.ip,
+            CONNECTIONS_SUPERUSER_BAN_MS,
+            `${mod}: ${params.reason}`
+          );
+
+          this.app.events.emit(PLAYERS_KICK, playerId);
+        }
 
         break;
 
@@ -389,7 +444,7 @@ class Admin {
       return;
     }
 
-    Admin.logModeratorAction(
+    this.logModeratorAction(
       mod as string,
       params.action as string,
       params.reason as string,
@@ -415,13 +470,13 @@ class Admin {
     }
   }
 
-  private static logModeratorAction(
+  private logModeratorAction(
     moderator: string,
     action: string,
     reason: string,
     player: AdminActionPlayer
   ): void {
-    Log.info('Moderator action: %o', {
+    this.log.info('Moderator action: %o', {
       moderator,
       action,
       reason,

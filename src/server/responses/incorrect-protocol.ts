@@ -1,6 +1,6 @@
 import { SERVER_ERRORS, SERVER_PACKETS } from '@airbattle/protocol';
 import {
-  CONNECTIONS_BREAK,
+  CONNECTIONS_DISCONNECT,
   CONNECTIONS_SEND_PACKETS,
   ERRORS_INCORRECT_PROTOCOL,
 } from '../../events';
@@ -35,6 +35,6 @@ export default class IncorrectProtocolResponse extends System {
       connectionId
     );
 
-    this.emit(CONNECTIONS_BREAK, connectionId);
+    this.emit(CONNECTIONS_DISCONNECT, connectionId);
   }
 }

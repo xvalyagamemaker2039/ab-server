@@ -1,13 +1,14 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFile } from 'fs';
 import { Worker } from 'worker_threads';
-import { USER_STATS_SAVE_INTERVAL_SEC } from '../../constants';
+import { USER_STATS_SAVE_INTERVAL_SEC } from '../../../constants';
 import {
   TIMELINE_BEFORE_GAME_START,
   TIMELINE_CLOCK_SECOND,
   USERS_WORKER_SAVE_STATS,
   USERS_WORKER_SAVE_STATS_RESPONSE,
-} from '../../events';
-import { System } from '../system';
+} from '../../../events';
+import { System } from '../../system';
+import { stringifyUserStats } from './user-stats-serialize';
 
 export default class UserStatsPeriodic extends System {
   private worker: Worker;
@@ -16,18 +17,22 @@ export default class UserStatsPeriodic extends System {
 
   private saveInProgress = false;
 
+  private dataToSave = '';
+
   constructor({ app }) {
     super({ app });
 
     this.listeners = {
       [TIMELINE_BEFORE_GAME_START]: this.onBeforeGameStart,
       [TIMELINE_CLOCK_SECOND]: this.onSecondTick,
-      [USERS_WORKER_SAVE_STATS_RESPONSE]: this.updateChangesStatus,
+      [USERS_WORKER_SAVE_STATS_RESPONSE]: this.updateSavingStatus,
     };
   }
 
   onBeforeGameStart(): void {
-    this.runWorker();
+    if (this.app.config.threads) {
+      this.runWorker();
+    }
 
     if (existsSync(this.app.config.userStats.path)) {
       this.load();
@@ -58,21 +63,60 @@ export default class UserStatsPeriodic extends System {
     }
   }
 
+  /**
+   * Initiate data saving task.
+   */
   save(): void {
     this.saveInProgress = true;
     this.storage.users.hasChanges = false;
 
-    this.worker.postMessage({
-      event: USERS_WORKER_SAVE_STATS,
-      args: [this.storage.users.list],
+    if (this.app.config.threads) {
+      this.worker.postMessage({
+        event: USERS_WORKER_SAVE_STATS,
+        args: [this.storage.users.list],
+      });
+    } else {
+      this.serializeData();
+    }
+  }
+
+  saveToFile(): void {
+    writeFile(this.app.config.userStats.path, this.dataToSave, err => {
+      if (err) {
+        this.log.error('Error while saving user stats: %o', { error: err.stack });
+      }
+
+      this.dataToSave = '';
+      this.saveInProgress = false;
     });
   }
 
-  updateChangesStatus(saved: boolean): void {
+  updateSavingStatus(saved: boolean): void {
     this.saveInProgress = !saved;
   }
 
-  runWorker(): void {
+  private serializeData(): void {
+    let resultStatus = true;
+
+    try {
+      this.dataToSave = stringifyUserStats([...this.storage.users.list.entries()]);
+    } catch (err) {
+      this.log.error('Error while serialising user stats: %o', { error: err.stack });
+
+      this.dataToSave = '';
+      this.saveInProgress = false;
+      resultStatus = false;
+    }
+
+    /**
+     * Postpone the saving to file for a second.
+     */
+    if (resultStatus) {
+      this.events.once(TIMELINE_CLOCK_SECOND, this.saveToFile, this);
+    }
+  }
+
+  private runWorker(): void {
     this.worker = new Worker('./dist/server/periodic/user-stats-worker.js', {
       workerData: {
         config: this.app.config,

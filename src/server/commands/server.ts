@@ -70,7 +70,7 @@ export default class ServerCommandHandler extends System {
       `transfered: ${kbIn}/${kbOut} KB, `,
       `skipped: ${this.m.lastSample.sf} fr, `,
       `uptime: ${this.m.uptime.human}, `,
-      `v${this.cfg.version}`,
+      `v${this.cfg.version}${this.cfg.threads ? 't' : 's'}`,
       edition,
     ].join('');
   }

@@ -1,7 +1,8 @@
 import { mkdirSync, readFileSync } from 'fs';
+import os from 'os';
 import { dirname, isAbsolute, resolve } from 'path';
-import { FLAGS_ISO_TO_CODE, GAME_TYPES } from '@airbattle/protocol';
 import dotenv from 'dotenv';
+import { FLAGS_ISO_TO_CODE, GAME_TYPES } from '@airbattle/protocol';
 import {
   AUTH_LOGIN_SERVER_KEY_URL,
   BOTS_DEFAULT_IP_LIST,
@@ -64,6 +65,11 @@ export interface GameServerConfigInterface {
    * Game server root directory.
    */
   rootDir: string;
+
+  /**
+   * Use worker threads or not.
+   */
+  threads: boolean;
 
   /**
    * Server host/IP.
@@ -378,6 +384,8 @@ const config: GameServerConfigInterface = {
 
   cwd: process.cwd(),
   rootDir: appRootDir,
+
+  threads: boolValue(process.env.THREADS, os.cpus().length > 1),
 
   host: strValue(process.env.HOST, SERVER_DEFAULT_HOST),
   port: intValue(process.env.PORT, SERVER_DEFAULT_PORT),

@@ -10,9 +10,9 @@ import {
   MAX_UINT32,
 } from '../../constants';
 import {
+  CONNECTIONS_CLOSE,
   CONNECTIONS_CLOSED,
   CONNECTIONS_PACKET_RECEIVED,
-  WS_WORKER_CONNECTION_CLOSE,
   WS_WORKER_CONNECTION_OPENED,
   WS_WORKER_SEND_PACKETS,
   WS_WORKER_STARTED,
@@ -23,25 +23,25 @@ import { decodeIPv4 } from '../../support/binary';
 import { ConnectionId, PlayerConnection, WorkerConnectionMeta } from '../../types';
 import { hub, Hub } from '../../workers/events-hub';
 import Log from '../../workers/logger';
+import ConnectionsStorage from '../storage';
 import Admin from './admin';
-import WorkerStorage from './storage';
 
 class WsWorker {
   private uws: uws.TemplatedApp;
 
   private config: GameServerConfigInterface;
 
-  private storage: WorkerStorage;
+  private storage: ConnectionsStorage;
 
   constructor() {
     this.config = workerData.config;
-    this.storage = new WorkerStorage();
+    this.storage = new ConnectionsStorage();
 
     /**
      * Event handlers.
      */
     hub.events.on(WS_WORKER_SEND_PACKETS, this.sendPackets, this);
-    hub.events.on(WS_WORKER_CONNECTION_CLOSE, this.closeConnection, this);
+    hub.events.on(CONNECTIONS_CLOSE, this.closeConnection, this);
 
     hub.events.on(WS_WORKER_UPDATE_PLAYERS_AMOUNT, (playersOnline: number) => {
       this.storage.players = playersOnline;

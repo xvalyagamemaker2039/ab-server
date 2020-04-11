@@ -7,16 +7,16 @@ import {
   SERVER_MIN_MOB_ID,
 } from '../constants';
 import {
-  CONNECTIONS_BREAK,
   CONNECTIONS_CHECK_PACKET_LIMITS,
+  CONNECTIONS_CLOSE,
   CONNECTIONS_CLOSED,
+  CONNECTIONS_DISCONNECT,
   CONNECTIONS_DISCONNECT_PLAYER,
   CONNECTIONS_KICK,
   CONNECTIONS_PACKET_RECEIVED,
   ERRORS_PACKET_DECODE_FAILED,
   PLAYERS_REMOVE,
   ROUTE_PACKET,
-  WS_WORKER_CONNECTION_CLOSE,
 } from '../events';
 import { CHANNEL_DISCONNECT_PLAYER } from '../events/channels';
 import { ConnectionId, ConnectionMeta, PlayerId } from '../types';
@@ -27,9 +27,9 @@ export default class Connections extends System {
     super({ app });
 
     this.listeners = {
-      [CONNECTIONS_BREAK]: this.onBreakConnection,
       [CONNECTIONS_CLOSED]: this.onConnectionClosed,
       [CONNECTIONS_DISCONNECT_PLAYER]: this.onDisconnectPlayer,
+      [CONNECTIONS_DISCONNECT]: this.onBreakConnection,
       [CONNECTIONS_PACKET_RECEIVED]: this.onPacketReceived,
       [ERRORS_PACKET_DECODE_FAILED]: this.onPacketDecodeFailed,
     };
@@ -225,14 +225,14 @@ export default class Connections extends System {
       }
 
       try {
-        this.emit(WS_WORKER_CONNECTION_CLOSE, connectionId);
+        this.emit(CONNECTIONS_CLOSE, connectionId);
       } catch (err) {
         this.log.debug('Connection 1 breaking error: %o', { connectionId, error: err.stack });
       }
 
       if (typeof ws2 !== 'undefined' && ws2 !== null) {
         try {
-          this.emit(WS_WORKER_CONNECTION_CLOSE, connectionId2);
+          this.emit(CONNECTIONS_CLOSE, connectionId2);
         } catch (err) {
           this.log.debug('Connection 2 breaking error: %o', {
             connectionId: connectionId2,

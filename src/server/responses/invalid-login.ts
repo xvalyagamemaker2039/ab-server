@@ -1,6 +1,6 @@
 import { ServerPackets, SERVER_ERRORS, SERVER_PACKETS } from '@airbattle/protocol';
 import {
-  CONNECTIONS_BREAK,
+  CONNECTIONS_DISCONNECT,
   CONNECTIONS_SEND_PACKETS,
   ERRORS_INVALID_LOGIN_DATA,
 } from '../../events';
@@ -36,7 +36,7 @@ export default class InvalidLoginResponse extends System {
      * otherwise the frontend doens't have time to process the message and to show it.
      */
     setTimeout(() => {
-      this.emit(CONNECTIONS_BREAK, connectionId);
+      this.emit(CONNECTIONS_DISCONNECT, connectionId);
     }, 100);
   }
 }

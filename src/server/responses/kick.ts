@@ -1,6 +1,6 @@
 import { ServerPackets, SERVER_ERRORS, SERVER_PACKETS } from '@airbattle/protocol';
 import {
-  CONNECTIONS_BREAK,
+  CONNECTIONS_DISCONNECT,
   CONNECTIONS_DISCONNECT_PLAYER,
   CONNECTIONS_KICK,
   CONNECTIONS_SEND_PACKETS,
@@ -39,7 +39,7 @@ export default class KickPlayerResponse extends System {
       connectionId
     );
 
-    this.emit(CONNECTIONS_BREAK, connectionId);
+    this.emit(CONNECTIONS_DISCONNECT, connectionId);
   }
 
   onKickPlayer(playerId: PlayerId): void {

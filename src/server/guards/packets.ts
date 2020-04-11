@@ -6,8 +6,8 @@ import {
 } from '../../constants';
 import {
   CONNECTIONS_BAN_IP,
-  CONNECTIONS_BREAK,
   CONNECTIONS_CHECK_PACKET_LIMITS,
+  CONNECTIONS_DISCONNECT,
   CONNECTIONS_DISCONNECT_PLAYER,
   CONNECTIONS_SEND_PACKETS,
   ERRORS_PACKET_FLOODING_DETECTED,
@@ -58,7 +58,7 @@ export default class PacketsGuard extends System {
           connection.status = CONNECTIONS_STATUS.PENDING_TO_CLOSE;
 
           setTimeout(() => {
-            this.emit(CONNECTIONS_BREAK, connectionId);
+            this.emit(CONNECTIONS_DISCONNECT, connectionId);
           }, 200);
 
           return;
@@ -130,7 +130,7 @@ export default class PacketsGuard extends System {
       }, 100);
     } else {
       setTimeout(() => {
-        this.emit(CONNECTIONS_BREAK, connectionId);
+        this.emit(CONNECTIONS_DISCONNECT, connectionId);
       }, 100);
     }
   }

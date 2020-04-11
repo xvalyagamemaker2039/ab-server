@@ -9,7 +9,7 @@ import {
   SERVER_SCALE_FACTOR_VALID_VALUES,
   UPGRADES_DEFAULT_DROP_CHANCE,
 } from '../constants';
-import WsEndpoint from '../endpoints/ws';
+import WsEndpointThreads from '../endpoints/ws-threads';
 import {
   CHAT_EMIT_DELAYED_EVENTS,
   CHAT_MUTE_EMIT_DELAYED_EVENTS,
@@ -57,6 +57,7 @@ import GameManifest from '../server/mainfest';
 import { GameStorage } from '../server/storage';
 import { System } from '../server/system';
 import { GameLoopCallback } from '../types';
+import WsEndpoint from '../endpoints/ws';
 import GameTicker from './ticker';
 
 interface GameServerBootstrapInterface {
@@ -115,7 +116,7 @@ export default class GameServerBootstrap implements GameServerBootstrapInterface
   /**
    * WS and HTTP endpoint.
    */
-  public ws: WsEndpoint;
+  public ws: WsEndpointThreads | WsEndpoint;
 
   /**
    * Game mode config.
@@ -143,6 +144,12 @@ export default class GameServerBootstrap implements GameServerBootstrapInterface
   constructor({ config, log }: { config: GameServerConfigInterface; log: Logger }) {
     this.config = config;
     this.log = log;
+
+    if (this.config.threads) {
+      this.log.info('Starting multi-threads version.');
+    } else {
+      this.log.info('Starting single thread version.');
+    }
 
     this.bindExitListeners();
     this.setupEvents();
@@ -347,17 +354,25 @@ export default class GameServerBootstrap implements GameServerBootstrapInterface
       CHANNEL_UPDATE_PLAYER_FLAG
     );
 
-    this.events.on(WORKERS_LOG_DEBUG, this.log.debug, this.log);
-    this.events.on(WORKERS_LOG_ERROR, this.log.error, this.log);
-    this.events.on(WORKERS_LOG_FATAL, this.log.fatal, this.log);
-    this.events.on(WORKERS_LOG_INFO, this.log.info, this.log);
-    this.events.on(WORKERS_LOG_WARN, this.log.warn, this.log);
+    if (this.config.threads) {
+      this.events.on(WORKERS_LOG_DEBUG, this.log.debug, this.log);
+      this.events.on(WORKERS_LOG_ERROR, this.log.error, this.log);
+      this.events.on(WORKERS_LOG_FATAL, this.log.fatal, this.log);
+      this.events.on(WORKERS_LOG_INFO, this.log.info, this.log);
+      this.events.on(WORKERS_LOG_WARN, this.log.warn, this.log);
+    }
   }
 
   private async initEndpoints(): Promise<void> {
-    this.ws = new WsEndpoint({
-      app: this,
-    });
+    if (this.config.threads) {
+      this.ws = new WsEndpointThreads({
+        app: this,
+      });
+    } else {
+      this.ws = new WsEndpoint({
+        app: this,
+      });
+    }
 
     await this.ws.start();
   }

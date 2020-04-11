@@ -1,5 +1,9 @@
 import { ServerPackets, SERVER_ERRORS, SERVER_PACKETS } from '@airbattle/protocol';
-import { CONNECTIONS_BREAK, CONNECTIONS_SEND_PACKETS, PLAYERS_LIMIT_REACHED } from '../../events';
+import {
+  CONNECTIONS_DISCONNECT,
+  CONNECTIONS_SEND_PACKETS,
+  PLAYERS_LIMIT_REACHED,
+} from '../../events';
 import { ConnectionId } from '../../types';
 import { System } from '../system';
 
@@ -28,6 +32,6 @@ export default class PlayersLimitResponse extends System {
       connectionId
     );
 
-    this.emit(CONNECTIONS_BREAK, connectionId);
+    this.emit(CONNECTIONS_DISCONNECT, connectionId);
   }
 }

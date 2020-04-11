@@ -56,7 +56,7 @@ import GameWarming from './maintenance/warming';
 import PingPeriodic from './periodic/ping';
 import PowerupsPeriodic from './periodic/powerups';
 import ScoreBoardPeriodic from './periodic/score-board';
-import UserStatsPeriodic from './periodic/user-stats';
+import UserStatsPeriodic from './periodic/user-stats/user-stats';
 import AfkDisconnectResponse from './responses/afk-disconnect';
 import AlreadyLoggedInResponse from './responses/already-logged-in';
 import BackupResponse from './responses/backup';

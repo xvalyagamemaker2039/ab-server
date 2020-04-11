@@ -1,6 +1,10 @@
 import { ServerPackets, SERVER_ERRORS, SERVER_PACKETS } from '@airbattle/protocol';
 import { CONNECTIONS_STATUS } from '../../constants';
-import { CONNECTIONS_BREAK, CONNECTIONS_SEND_PACKETS, ERRORS_AFK_DISCONNECT } from '../../events';
+import {
+  CONNECTIONS_DISCONNECT,
+  CONNECTIONS_SEND_PACKETS,
+  ERRORS_AFK_DISCONNECT,
+} from '../../events';
 import { MainConnectionId } from '../../types';
 import { System } from '../system';
 
@@ -40,7 +44,7 @@ export default class AfkDisconnectResponse extends System {
        * otherwise the frontend doesn't have time to process the message and to show it.
        */
       setTimeout(() => {
-        this.emit(CONNECTIONS_BREAK, connectionId);
+        this.emit(CONNECTIONS_DISCONNECT, connectionId);
       }, 100);
 
       connection.status = CONNECTIONS_STATUS.PENDING_TO_CLOSE;

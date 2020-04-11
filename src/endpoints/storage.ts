@@ -1,6 +1,6 @@
-import { ConnectionId, PlayerConnection } from '../../types';
+import { ConnectionId, PlayerConnection } from '../types';
 
-class WorkerStorage {
+class ConnectionsStorage {
   /**
    * All connections (main and backup).
    */
@@ -17,4 +17,4 @@ class WorkerStorage {
   public nextConnectionId = 1;
 }
 
-export default WorkerStorage;
+export default ConnectionsStorage;

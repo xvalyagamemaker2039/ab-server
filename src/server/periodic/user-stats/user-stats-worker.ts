@@ -1,54 +1,15 @@
 import { writeFile } from 'fs';
 import { workerData } from 'worker_threads';
-import fastJson from 'fast-json-stringify';
-import { GameServerConfigInterface } from '../../config';
+import { GameServerConfigInterface } from '../../../config';
 import {
   USERS_WORKER_SAVE_STATS,
   USERS_WORKER_SAVE_STATS_RESPONSE,
   USERS_WORKER_STOP,
-} from '../../events';
-import { User, UserId } from '../../types';
-import { hub, Hub } from '../../workers/events-hub';
-import Log from '../../workers/logger';
-
-const stringifyUsers = fastJson({
-  type: 'array',
-  items: {
-    type: 'array',
-    items: [
-      {
-        type: 'string',
-      },
-      {
-        type: 'object',
-        properties: {
-          id: {
-            type: 'object',
-            properties: {
-              current: {
-                type: 'string',
-              },
-            },
-          },
-          lifetimestats: {
-            type: 'object',
-            properties: {
-              earnings: {
-                type: 'number',
-              },
-              totalkills: {
-                type: 'number',
-              },
-              totaldeaths: {
-                type: 'number',
-              },
-            },
-          },
-        },
-      },
-    ],
-  },
-});
+} from '../../../events';
+import { User, UserId } from '../../../types';
+import { hub, Hub } from '../../../workers/events-hub';
+import Log from '../../../workers/logger';
+import { stringifyUserStats } from './user-stats-serialize';
 
 class UserAccountsWorker {
   private config: GameServerConfigInterface;
@@ -77,7 +38,7 @@ class UserAccountsWorker {
       let data: string;
 
       try {
-        data = stringifyUsers([...users.entries()]);
+        data = stringifyUserStats([...users.entries()]);
       } catch (err) {
         Log.error('Error while serialising user stats: %o', { error: err.stack });
         this.saveInProgress = false;
