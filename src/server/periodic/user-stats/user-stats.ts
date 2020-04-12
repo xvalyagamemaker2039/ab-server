@@ -117,7 +117,7 @@ export default class UserStatsPeriodic extends System {
   }
 
   private runWorker(): void {
-    this.worker = new Worker('./dist/server/periodic/user-stats-worker.js', {
+    this.worker = new Worker('./dist/server/periodic/user-stats/user-stats-worker.js', {
       workerData: {
         config: this.app.config,
       },
